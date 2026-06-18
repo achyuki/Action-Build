@@ -448,25 +448,6 @@ jobs:
             echo "ENABLE_RUST=false" >> $GITHUB_ENV
           fi
 
-      # OGKI转换GKI，无需修改 dtbo 开机
-      - name: Apply Convert HMBIRD_OGKI to HMBIRD_GKI
-        if: ${{ fromJSON(env.KV1) >= 6 && fromJSON(env.KV2) >= 66 }}
-        run: |
-          PATCH_DIR="${GITHUB_WORKSPACE}/kernel_workspace/Action-Build/patches"
-          cd kernel_workspace/kernel_platform/common
-          for p in ./kernel/sched/hmbird* ./vendor/oplus/kernel/cpu/sched_ext/hmbird*; do
-            [ -d "$p" ] && {
-              echo "源码中风驰代码已经存在，启用二次回退"
-              exit 0
-            }
-          done
-          sed -i '1iobj-y += hmbird_patch.o' drivers/Makefile
-          echo "正在打OGKI转换GKI补丁"
-          patch -p1 -F 3 < "${PATCH_DIR}/hmbird_patch.patch" || true
-          echo "OGKI转换GKI_patch完成"
-          source $REJ_CHECKER
-          check_rejects .
-
       - name: Apply DROID_SPACES
         env:
           FILE: ${{ github.event.inputs.FILE }}
@@ -502,6 +483,8 @@ jobs:
 
           echo "为 oplus_bsp_midas 模块返回幽灵任务以避免空指针崩溃..."
           patch -p1 --forward < "${PATCH_DIR}/ghost-task-for-midas.patch" || true
+
+          patch -p1 -F 3 < "${PATCH_DIR}/ddl_hit_hook.patch" || true
 
           if [ "$KMI" = "android16-6.12" ]; then
             rm -f include/uapi/linux/ntsync.h
@@ -790,10 +773,10 @@ jobs:
             ./kernel_platform/oplus/build/oplus_build_kernel.sh ${{ env.CPUD }} ${{ env.BUILD_METHOD }}
           fi
 
-      - name: Make AnyKernel3
+      - name: Find Image
         run: |
-          git clone https://github.com/Numbersf/AnyKernel3 --depth=1
-          rm -rf ./AnyKernel3/.git
+          #git clone https://github.com/Numbersf/AnyKernel3 --depth=1
+          #rm -rf ./AnyKernel3/.git
           mkdir -p kernel_workspace/kernel_platform/out/Final-Image-Find/
           image_path=""
           if [ -d "./kernel_workspace/kernel_platform/common/out/" ]; then
@@ -814,15 +797,15 @@ jobs:
           fi
           if [ -f "$image_path" ]; then
             echo "✅ Image file finally located at: $image_path"
-            cp "$image_path" ./AnyKernel3/Image
+            #cp "$image_path" ./AnyKernel3/Image
             cp "$image_path" kernel_workspace/kernel_platform/out/Final-Image-Find/Image
           fi
 
-      - name: Upload AnyKernel3
+      - name: Upload Image
         uses: actions/upload-artifact@v7
         with:
-          name: AnyKernel3_${{ steps.extract_info.outputs.value }}(${{ env.TKERNEL_VERSION }})
-          path: ./AnyKernel3/*
+          name: Image_${{ steps.extract_info.outputs.value }}(${{ env.TKERNEL_VERSION }})
+          path: kernel_workspace/kernel_platform/out/Final-Image-Find/Image
 
       - name: Save Ccache
         if: ${{ github.event.inputs.BUILD_NOCACHE == 'false' && steps.cache_size_check.outputs.ccache_save == 'true' && steps.restore-ccache.outputs.cache-hit != 'true' }}
