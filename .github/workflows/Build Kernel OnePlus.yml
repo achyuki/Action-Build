@@ -74,6 +74,11 @@ on:
         description: "动态清单仓库所有者"
         required: true
         default: "Numbersf"
+      SUFFIX:
+        type: string
+        description: "自定义内核后缀(不输入使用RAND_STR或-1关闭)"
+        required: false
+        default: ""
       FAST_BUILD:
         type: boolean
         description: "是否启用极速构建？"
@@ -234,6 +239,32 @@ jobs:
           echo "Selected ANDROID_VERSION: ${{ env.ANDROID_VERSION }}"
           echo "Selected BUILD_METHOD: ${{ env.BUILD_METHOD }}"
           echo "Selected FILE: ${{ github.event.inputs.FILE }}"
+
+          SUFFIX="${{ github.event.inputs.SUFFIX }}"
+
+          # SUFFIX
+          echo "Custom SUFFIX: $SUFFIX"
+          echo -n "SUFFIX Unicode: "
+          python3 - <<EOF
+          import unicodedata, re
+          s = """$SUFFIX"""
+          warn = False
+          out = []
+          for c in s:
+              if c.isspace() or unicodedata.category(c) == 'Cf':
+                  warn = True
+                  out.append(f'\033[31mU+{ord(c):04X}\033[0m ')
+              else:
+                  out.append(f'U+{ord(c):04X} ')
+          print(''.join(out))
+
+          # 异常字符警告
+          if warn:
+              print("::warning title=SUFFIX Error::检测到自定义内核后缀异常符号调用，请注意!")
+          # 格式重复检测
+          if re.search(r'^\d{1,3}\.\d{1,3}\.\d{1,3}|-?android\d{2,3}-', s):
+              print("::warning title=SUFFIX Format Error::检测到自定义内核后缀存在重复或冗余内容调用，请注意!")
+          EOF
 
           echo "------------------------------"
 
@@ -448,6 +479,84 @@ jobs:
             echo "ENABLE_RUST=false" >> $GITHUB_ENV
           fi
 
+      # 自定义内核后缀
+      - name: Custom Kernel Suffix if set
+        if: ${{ github.event.inputs.SUFFIX != '' && github.event.inputs.SUFFIX != '-1' }}
+        run: |
+          cd kernel_workspace/kernel_platform
+          SUFFIX="${{ github.event.inputs.SUFFIX }}"
+          FAST_BUILD="${{ github.event.inputs.FAST_BUILD }}"
+
+          for f in ./common/scripts/setlocalversion ./"$KERNEL_REPOS"/scripts/setlocalversion ./external/dtc/scripts/setlocalversion; do
+            [ -f "$f" ] || continue
+            echo "Modifying: $f"
+
+            # Remove -dirty
+            sed -i 's/ -dirty//g' "$f"
+            sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
+
+            if grep -q 'KERNELVERSION.*scm_version' "$f"; then
+              echo "Detected NEW setlocalversion format"
+              sed -i "s|echo \"\${KERNELVERSION}.*scm_version}\"|echo \"\${KERNELVERSION}-${KANDROID_VERSION}-${SUFFIX}\"|" "$f"
+            elif grep -q 'echo "\$res"' "$f"; then
+              echo "Detected OLD setlocalversion format"
+              if [ "$FAST_BUILD" = "true" ]; then
+                echo "FAST_BUILD enabled: using static res"
+                sed -i "s/^res=.*/res=\"-${KANDROID_VERSION}-${SUFFIX}\"/" "$f"
+              else
+                echo "Standard build: injecting suffix via cut/echo"
+                if [[ -f ./build_with_bazel.py ]]; then
+                  echo "使用官方脚本编译且当使用 build_with_bazel 时，可能受特殊符号数量限制，编译失败请修改"
+                  echo "When using the official script and building with build_with_bazel, the build may fail due to a limit on the number of special characters. Please modify the configuration if that happens."
+                fi
+                tac "$f" | sed "0,/echo \"\\\$res\"/s//res=\\\$(echo \\\$res | cut -d- -f1-2)-${SUFFIX}; echo \"\\\$res\";/" | tac > "$f.tmp" && mv "$f.tmp" "$f"
+              fi
+            else
+              echo "Unknown format, appending echo manually"
+              echo "echo \"\$res-${SUFFIX}\"" >> "$f"
+            fi
+            chmod +x "$f"
+          done
+
+      # 伪官方格式的随机后缀（仅在 SUFFIX 未设置时生效）*
+      - name: Custom Kernel Random Suffix if empty
+        if: ${{ github.event.inputs.SUFFIX == '' }}
+        run: |
+          cd kernel_workspace/kernel_platform
+          FAST_BUILD="${{ github.event.inputs.FAST_BUILD }}"
+
+          # 生成随机数字和随机hash
+          RANDOM_DIGIT=$(od -An -N1 -tu1 < /dev/urandom | tr -d '[:space:]' | awk '{print $1 % 11}')
+          RANDOM_HASH=$(od -An -N7 -tx1 /dev/urandom | tr -d ' \n')
+          RANDOM_SUFFIX="${RANDOM_DIGIT}-o-g${RANDOM_HASH}"
+
+          for f in ./common/scripts/setlocalversion ./"$KERNEL_REPOS"/scripts/setlocalversion ./external/dtc/scripts/setlocalversion; do
+            [ -f "$f" ] || continue
+            echo "Modifying: $f"
+
+            # Remove -dirty
+            sed -i 's/ -dirty//g' "$f"
+            sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
+
+            if grep -q 'KERNELVERSION.*scm_version' "$f"; then
+              echo "Detected NEW setlocalversion format"
+              sed -i "s|echo \"\${KERNELVERSION}.*scm_version}\"|echo \"\${KERNELVERSION}-${KANDROID_VERSION}-${RANDOM_SUFFIX}\"|" "$f"
+            elif grep -q 'echo "\$res"' "$f"; then
+              echo "Detected OLD setlocalversion format"
+              if [ "$FAST_BUILD" = "true" ]; then
+                echo "FAST_BUILD enabled: using static res with random suffix"
+                sed -i "s/^res=.*/res=\"-${KANDROID_VERSION}-${RANDOM_SUFFIX}\"/" "$f"
+              else
+                echo "Standard build: injecting random suffix via cut/echo"
+                tac "$f" | sed "0,/echo \"\\\$res\"/s//res=\\\$(echo \\\$res | cut -d- -f1-2)-${RANDOM_SUFFIX}; echo \"\\\$res\";/" | tac > "$f.tmp" && mv "$f.tmp" "$f"
+              fi
+            else
+              echo "Unknown format, appending echo manually"
+              echo "echo \"\$res-${RANDOM_SUFFIX}\"" >> "$f"
+            fi
+            chmod +x "$f"
+          done
+
       - name: Apply DROID_SPACES
         env:
           FILE: ${{ github.event.inputs.FILE }}
@@ -484,7 +593,7 @@ jobs:
           echo "为 oplus_bsp_midas 模块返回幽灵任务以避免空指针崩溃..."
           patch -p1 --forward < "${PATCH_DIR}/ghost-task-for-midas.patch" || true
 
-          patch -p1 -F 3 < "${PATCH_DIR}/ddl_hit_hook.patch" || true
+          patch -p1 --forward -F 3 < "${PATCH_DIR}/ddl_hit_hook.patch" || true
 
           if [ "$KMI" = "android16-6.12" ]; then
             rm -f include/uapi/linux/ntsync.h
