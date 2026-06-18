@@ -557,6 +557,114 @@ jobs:
             chmod +x "$f"
           done
 
+
+
+      - name: Apply DROID_SPACES
+        env:
+          FILE: ${{ github.event.inputs.FILE }}
+        run: |
+          PATCH_DIR="${GITHUB_WORKSPACE}/kernel_workspace/Action-Build/patches"
+          cd kernel_workspace/kernel_platform/common
+          # 注释掉原始的 sysv 结构体定义
+          sed -i 's/^\(\t\)struct sysv_sem\b.*sysvsem;/\1\/\/ struct sysv_sem\t\t\tsysvsem;/' include/linux/sched.h
+          sed -i 's/^\(\t\)struct sysv_shm\b.*sysvshm;/\1\/\/ struct sysv_shm\t\t\tsysvshm;/' include/linux/sched.h
+
+          if [ "$KMI" = "android12-5.10" ]; then
+            echo "为 android12-5.10 修复 sysvipc KABI 绕过及 POSIX_MQUEUE ABI 填充问题..."
+            sed -i '/^\tconst struct sched_class\t\*sched_class;/a \\n#ifndef __GENKSYMS__\n\tstruct sysv_sem\t\t\tsysvsem;\n\tstruct sysv_shm\t\t\tsysvshm;\n#endif\n' include/linux/sched.h
+            sed -i 's/^\tunsigned long mq_bytes;\t\/\* How many bytes can be allocated to mqueue[?] \*\//\t\/\/unsigned long mq_bytes;\t\/* How many bytes can be allocated to mqueue? *\//' include/linux/sched/user.h
+            sed -i '/struct ratelimit_state ratelimit;/,/ANDROID_OEM_DATA_ARRAY(1, 2);/{/^\tANDROID_KABI_RESERVE(1);/{N;N;s/^\tANDROID_KABI_RESERVE(1);\n\tANDROID_KABI_RESERVE(2);\n\tANDROID_OEM_DATA_ARRAY(1, 2);/#if defined(CONFIG_POSIX_MQUEUE)\n\tANDROID_KABI_USE(1, unsigned long mq_bytes);\n\tANDROID_KABI_RESERVE(2);\n\tANDROID_OEM_DATA_ARRAY(1, 2);\n#else\n\tANDROID_KABI_RESERVE(1);\n\tANDROID_KABI_RESERVE(2);\n\tANDROID_OEM_DATA_ARRAY(1, 2);\n#endif/}}' include/linux/sched/user.h
+          # 检查 sched.h 并修改 KABI 槽位或指针
+          elif grep -q "sched_dl_entity.*\*dl_server" include/linux/sched.h; then
+            echo "✅ 检测到 dl_server 指针，使用 packed union 方案"
+            sed -i 's|\tstruct sched_entity\t\tse;|#ifdef CONFIG_SYSVIPC\n\tunion {\n\t\tchar __kabi_ignored_0;\n\t\tstruct sysv_sem\t\t\tsysvsem;\n\t}__attribute__((packed));\n\tunion {\n\t\tchar __kabi_ignored_1;\n\t\tstruct sysv_shm\t\t\tsysvshm;\n\t}__attribute__((packed));\n#endif\n\n\tstruct sched_entity\t\tse;|' include/linux/sched.h
+          elif grep -q "ANDROID_KABI_USE(1," include/linux/sched.h; then
+            echo "✅ 检测到 USE(1)，使用槽位 6,7,8"
+            sed -i -e '/ANDROID_KABI_RESERVE(6);/{N;N;s|\tANDROID_KABI_RESERVE(6);\n\tANDROID_KABI_RESERVE(7);\n\tANDROID_KABI_RESERVE(8);|#ifdef CONFIG_SYSVIPC\n\tANDROID_KABI_USE(6, struct sysv_sem sysvsem);\n\t_ANDROID_KABI_REPLACE(ANDROID_KABI_RESERVE(7); ANDROID_KABI_RESERVE(8), struct sysv_shm sysvshm);\n#else\n\tANDROID_KABI_RESERVE(6);\n\tANDROID_KABI_RESERVE(7);\n\tANDROID_KABI_RESERVE(8);\n#endif|;}' include/linux/sched.h
+          elif grep -q "ANDROID_KABI_RESERVE(1);" include/linux/sched.h; then
+            echo "✅ 检测到 RESERVE(1)，使用槽位 1,2,3"
+            sed -i -e '/ANDROID_KABI_RESERVE(1);/{N;N;N;N;N;N;N;s|\tANDROID_KABI_RESERVE(1);\n\tANDROID_KABI_RESERVE(2);\n\tANDROID_KABI_RESERVE(3);\n\tANDROID_KABI_RESERVE(4);\n\tANDROID_KABI_RESERVE(5);\n\tANDROID_KABI_RESERVE(6);\n\tANDROID_KABI_RESERVE(7);\n\tANDROID_KABI_RESERVE(8);|#ifdef CONFIG_SYSVIPC\n\tANDROID_KABI_USE(1, struct sysv_sem sysvsem);\n\t_ANDROID_KABI_REPLACE(ANDROID_KABI_RESERVE(2); ANDROID_KABI_RESERVE(3), struct sysv_shm sysvshm);\n#else\n\tANDROID_KABI_RESERVE(1);\n\tANDROID_KABI_RESERVE(2);\n\tANDROID_KABI_RESERVE(3);\n#endif\n\tANDROID_KABI_RESERVE(4);\n\tANDROID_KABI_RESERVE(5);\n\tANDROID_KABI_RESERVE(6);\n\tANDROID_KABI_RESERVE(7);\n\tANDROID_KABI_RESERVE(8);|;}' include/linux/sched.h
+          elif grep -q "ANDROID_KABI_RESERVE(3);" include/linux/sched.h; then
+            echo "✅ fallback，使用槽位 3,4,5"
+            sed -i -e '/ANDROID_KABI_RESERVE(3);/{N;N;N;s|\tANDROID_KABI_RESERVE(3);\n\tANDROID_KABI_RESERVE(4);\n\tANDROID_KABI_RESERVE(5);\n\tANDROID_KABI_RESERVE(6);|#ifdef CONFIG_SYSVIPC\n\tANDROID_KABI_USE(3, struct sysv_sem sysvsem);\n\t_ANDROID_KABI_REPLACE(ANDROID_KABI_RESERVE(4); ANDROID_KABI_RESERVE(5), struct sysv_shm sysvshm);\n#else\n\tANDROID_KABI_RESERVE(3);\n\tANDROID_KABI_RESERVE(4);\n\tANDROID_KABI_RESERVE(5);\n#endif\n\tANDROID_KABI_RESERVE(6);|;}' include/linux/sched.h
+          else
+            echo "❌ 无法通过上下文精准匹配 KABI 槽位或对应指针"
+            exit 9
+          fi
+
+          echo "为 oplus_bsp_midas 模块返回幽灵任务以避免空指针崩溃..."
+          patch -p1 --forward < "${PATCH_DIR}/ghost-task-for-midas.patch" || true
+
+          #patch -p1 --forward -F 3 < "${PATCH_DIR}/ddl_hit_hook.patch" || true
+
+          if [ "$KMI" = "android16-6.12" ]; then
+            rm -f include/uapi/linux/ntsync.h
+            rm -f drivers/misc/ntsync.c
+            echo "补全 IPC NS 符号导出..."
+            if ! grep -q 'EXPORT_SYMBOL.*put_ipc_ns' ./ipc/namespace.c; then
+              echo -e '\nEXPORT_SYMBOL_GPL(put_ipc_ns);' >> ./ipc/namespace.c
+            fi
+            if ! grep -q 'EXPORT_SYMBOL.*init_ipc_ns' ./ipc/msgutil.c; then
+              echo -e '\nEXPORT_SYMBOL_GPL(init_ipc_ns);' >> ./ipc/msgutil.c
+            fi
+          fi
+          echo "拓展 ntsync 支持..."
+          patch -p1 --forward < "${PATCH_DIR}/ntsync/ntsync_base.patch" || true
+          if [[ "$FILE" == oneplus_10r* ]]; then
+            patch -p1 --forward < "${PATCH_DIR}/ntsync/ntsync_compat_android12-5.10_14.patch" || true
+          else
+            patch -p1 --forward < "${PATCH_DIR}/ntsync/ntsync_compat_$([ -f "${PATCH_DIR}/ntsync/ntsync_compat_${KMI}_${ANDROID_SHORT_VERSION}.patch" ] && echo "${KMI}_${ANDROID_SHORT_VERSION}" || echo "${KMI}").patch" || true
+          fi
+          source $REJ_CHECKER
+          check_rejects .
+
+      # 配置信息，带*为附加项目，具有一定危险性和不确定性
+      - name: Add Configuration Settings
+        run: |
+          cd kernel_workspace/kernel_platform/common
+          CONFIG_FILE=./arch/arm64/configs/gki_defconfig
+          KERNEL_VERSION="${{ env.KERNEL_VERSION }}"
+
+          set_config() {
+            local val="$1"
+            local key="${val%%=*}"
+            if grep -qF "${key}=" "$CONFIG_FILE" || grep -qF "# ${key} is not set" "$CONFIG_FILE"; then
+              VAL="$val" awk -v key="$key" '
+                $0 == "# " key " is not set" || index($0, key "=") == 1 { print ENVIRON["VAL"]; next }
+                { print }
+              ' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE" || rm -f "${CONFIG_FILE}.tmp"
+            else
+              printf '%s\n' "$val" >> "$CONFIG_FILE"
+            fi
+          }
+
+          # TMPFS配置*
+          set_config "CONFIG_TMPFS_XATTR=y"
+          set_config "CONFIG_TMPFS_POSIX_ACL=y"
+
+          # DROID_SPACES配置*
+            set_config "CONFIG_NTSYNC=y"
+            set_config "CONFIG_SYSVIPC=y"
+            set_config "CONFIG_DEVTMPFS=y"
+            set_config "CONFIG_PID_NS=y"
+            set_config "CONFIG_IPC_NS=y"
+            set_config "CONFIG_NAMESPACES=y"
+            set_config "CONFIG_POSIX_MQUEUE=y"
+            set_config "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y"
+            set_config "CONFIG_NETFILTER_XT_TARGET_REJECT=y"
+            set_config "CONFIG_NETFILTER_XT_TARGET_LOG=y"
+            set_config "CONFIG_NETFILTER_XT_MATCH_RECENT=y"
+            set_config "CONFIG_NETFILTER_XT_SET=y"
+            set_config "CONFIG_IP_SET=y"
+            set_config "CONFIG_IP_SET_HASH_IP=y"
+            set_config "CONFIG_IP_SET_HASH_NET=y"
+
+          # 构建依赖项调整及优化
+          if [[ "$ENABLE_RUST" == "true" ]]; then
+            set_config "CONFIG_RUST=y"
+            set_config "CONFIG_ANDROID_BINDER_IPC_RUST=m"
+          fi
+
       - name: Disable GPUEB
         if: ${{ env.KERNEL_VERSION == '5.10' && startsWith(env.CPU, 'mt') }}
         run: |
