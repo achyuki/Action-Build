@@ -935,6 +935,29 @@ jobs:
           name: Image_${{ steps.extract_info.outputs.value }}(${{ env.TKERNEL_VERSION }})
           path: kernel_workspace/kernel_platform/out/Final-Image-Find/Image
 
+      - name: Check Cache Size Before Save
+        if: ${{ github.event.inputs.BUILD_NOCACHE == 'false' }}
+        id: cache_size_check
+        run: |
+          check_size() {
+            local CACHE_DIR="$1"
+            local CACHE_NAME="$2"
+            if [[ ! -d "$CACHE_DIR" ]]; then
+              echo "${CACHE_NAME}_save=false" >> "$GITHUB_OUTPUT"
+              return
+            fi
+            SIZE_MB=$(du -sm "$CACHE_DIR" | cut -f1)
+            echo "$CACHE_DIR 大小: ${SIZE_MB}MB"
+            if (( SIZE_MB >= 5 )); then
+              echo "${CACHE_NAME}_save=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "::warning title=Cache Warning::$CACHE_NAME 小于 5MB，跳过保存"
+              echo "${CACHE_NAME}_save=false" >> "$GITHUB_OUTPUT"
+            fi
+          }
+          check_size "${{ env.CCACHE_DIR }}" "ccache"
+          check_size "${{ github.workspace }}/kernel_workspace/.thinlto-cache" "thinlto"
+
       - name: Save Ccache
         if: ${{ github.event.inputs.BUILD_NOCACHE == 'false' && steps.cache_size_check.outputs.ccache_save == 'true' && steps.restore-ccache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v5
