@@ -595,7 +595,7 @@ jobs:
           echo "为 oplus_bsp_midas 模块返回幽灵任务以避免空指针崩溃..."
           patch -p1 --forward < "${PATCH_DIR}/ghost-task-for-midas.patch" || true
 
-          #patch -p1 --forward -F 3 < "${PATCH_DIR}/ddl_hit_hook.patch" || true
+          patch -p1 --forward -F 3 < "${PATCH_DIR}/ddl_hit_hook.patch" || true
 
           if [ "$KMI" = "android16-6.12" ]; then
             rm -f include/uapi/linux/ntsync.h
